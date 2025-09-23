@@ -5,7 +5,6 @@ A comprehensive MCP server using FastMCP that provides utility tools and Asana t
 """
 
 from fastmcp import FastMCP
-from prefect.blocks.system import Secret
 from typing import Any, Optional, List, Dict
 import datetime
 import json
@@ -15,21 +14,22 @@ import asana
 # Initialize the FastMCP server
 mcp = FastMCP("AsanaTaskManager")
 
-# Initialize Asana client using Prefect Secret block
+# Initialize Asana client using environment variable
 asana_client = None
 
 try:
-    # Load Asana credentials from Prefect Secret block
-    creds = Secret.load("asana-access-token")
-    creds_dict = creds.get()
-    token = creds_dict["token"]
+    # Load Asana access token from environment variable
+    token = os.getenv("ASANA-ACCESS-TOKEN")['token']
+    
+    if not token:
+        raise ValueError("ASANA-ACCESS-TOKEN environment variable not set")
     
     # Initialize Asana client with the token
     asana_client = asana.Client.access_token(token)
-    print("✅ Asana client initialized successfully using Prefect Secret block")
+    print("✅ Asana client initialized successfully using environment variable")
 except Exception as e:
-    print(f"⚠️  Failed to load Asana credentials from Prefect Secret 'asana-access-token': {e}")
-    print("   Asana features will be disabled. Please configure the 'asana-access-token' Prefect Secret block.")
+    print(f"⚠️  Failed to load Asana credentials from environment variable: {e}")
+    print("   Asana features will be disabled. Please set the ASANA-ACCESS-TOKEN environment variable.")
 
 @mcp.tool()
 def greet(name: str) -> str:
@@ -134,7 +134,7 @@ def create_asana_task(
         Success message with task details or error message
     """
     if not asana_client:
-        return "Error: Asana client not initialized. Please configure the 'asana-access-token' Prefect Secret block."
+        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
     
     try:
         task_data = {
@@ -191,7 +191,7 @@ def update_asana_task(
         Success message with updated task details or error message
     """
     if not asana_client:
-        return "Error: Asana client not initialized. Please configure the 'asana-access-token' Prefect Secret block."
+        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
     
     try:
         task_data = {}
@@ -238,7 +238,7 @@ def get_asana_task(task_gid: str) -> str:
         Task details or error message
     """
     if not asana_client:
-        return "Error: Asana client not initialized. Please configure the 'asana-access-token' Prefect Secret block."
+        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
     
     try:
         result = asana_client.tasks.get_task(
@@ -273,7 +273,7 @@ def list_asana_projects() -> str:
         List of projects with their GIDs and names or error message
     """
     if not asana_client:
-        return "Error: Asana client not initialized. Please configure the 'asana-access-token' Prefect Secret block."
+        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
     
     try:
         # Get the authenticated user first
@@ -311,7 +311,7 @@ def search_asana_tasks(query: str, project_gid: str = "", completed: str = "fals
         List of matching tasks or error message
     """
     if not asana_client:
-        return "Error: Asana client not initialized. Please configure the 'asana-access-token' Prefect Secret block."
+        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
     
     try:
         search_params = {
