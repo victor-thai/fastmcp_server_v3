@@ -85,7 +85,7 @@ def create_asana_task(
         
         result = tasks_api.create_task(
             body={'data': task_data}, 
-            opts={'opt_fields': ['gid', 'name', 'permalink_url']}
+            opts={'opt_fields': 'gid,name,permalink_url'}
         )
         
         return f"✅ Task created successfully!\nTask ID: {result['gid']}\nName: {result['name']}\nURL: {result.get('permalink_url', 'N/A')}"
@@ -141,7 +141,7 @@ def update_asana_task(
             project_gid = asana_projects.get(project, project)
             
             # Get user's workspace to search in
-            me = users_api.get_user(user_gid='me', opts={'opt_fields': ['gid', 'workspaces']})
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
             workspace_gid = me['workspaces'][0]['gid']
             
             # Search for tasks with this name in the specified project
@@ -153,7 +153,7 @@ def update_asana_task(
             
             tasks = tasks_api.search_tasks_for_workspace(
                 workspace_gid=workspace_gid,
-                opts={'opt_fields': ['name', 'gid', 'completed']},
+                opts={'opt_fields': 'name,gid,completed'},
                 **search_params
             )
             
@@ -204,7 +204,7 @@ def update_asana_task(
         result = tasks_api.update_task(
             body={'data': task_data}, 
             task_gid=task_gid, 
-            opts={'opt_fields': ['gid', 'name', 'completed']}
+            opts={'opt_fields': 'gid,name,completed'}
         )
         
         return f"✅ Task updated successfully!\nTask ID: {result['gid']}\nName: {result['name']}\nCompleted: {result['completed']}"
@@ -229,7 +229,7 @@ def get_asana_task(task_gid: str) -> str:
     try:
         result = tasks_api.get_task(
             task_gid=task_gid,
-            opts={'opt_fields': ['name', 'notes', 'completed', 'due_on', 'created_at', 'modified_at', 'assignee.name', 'projects.name', 'permalink_url']}
+            opts={'opt_fields': 'name,notes,completed,due_on,created_at,modified_at,assignee.name,projects.name,permalink_url'}
         )
         
         task_info = f"""📋 Task Details:
@@ -263,11 +263,11 @@ def list_asana_projects() -> str:
     
     try:
         # Get the authenticated user first
-        me = users_api.get_user(user_gid='me', opts={'opt_fields': ['gid', 'workspaces']})
+        me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
         
         # Get projects for the user
         projects = projects_api.get_projects(
-            opts={'opt_fields': ['name', 'gid', 'created_at', 'modified_at']},
+            opts={'opt_fields': 'name,gid,created_at,modified_at'},
             workspace=me['workspaces'][0]['gid']
         )
         
@@ -339,7 +339,7 @@ def search_asana_tasks(query: str, project: str = "", completed: str = "false") 
         
         tasks = tasks_api.search_tasks_for_workspace(
             workspace_gid=workspace_gid,
-            opts={'opt_fields': ['name', 'gid', 'completed', 'due_on', 'assignee.name']},
+            opts={'opt_fields': 'name,gid,completed,due_on,assignee.name'},
             **search_params
         )
         
