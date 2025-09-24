@@ -878,6 +878,7 @@ def get_team_members() -> str:
         result += f'💾 **Cache Status:** {len(user_cache)} entries cached\n\n'
         result += '💡 **Find a specific GID:** Use find_team_member_gid("Full Name") to search for someone specific.\n'
         result += '💡 **Test the resolution:** Use test_assignee_resolution("Your Name") to see how names are matched.\n'
+        result += '📝 **Create subtasks:** Use create_subtask() or create_multiple_subtasks() to add subtasks under existing tasks.\n'
         
         return result
         
@@ -940,6 +941,355 @@ def search_asana_tasks(query: str, project: str = "", completed: str = "false") 
         
     except Exception as e:
         return f"Error searching tasks: {str(e)}"
+
+@mcp.tool()
+def create_subtask(
+    parent_task_name_or_gid: str,
+    subtask_name: str,
+    project: str = "",
+    notes: str = "",
+    assignee: str = "",
+    due_date: str = "",
+    priority: str = "",
+    client: str = "",
+    platform: str = "",
+    status: str = "",
+    effort: str = ""
+) -> str:
+    """
+    Create a subtask under an existing parent task.
+    
+    Args:
+        parent_task_name_or_gid: Name or GID of the parent task
+        subtask_name: Name of the new subtask
+        project: Project name to search in (required if using parent task name)
+        notes: Subtask description (optional)
+        assignee: Full name, partial name, email, or GID (optional)
+        due_date: Due date - supports various formats (optional)
+        priority: 'low', 'medium', 'high', or 'urgent' (optional)
+        client: Client name (optional)
+        platform: Platform name (optional)
+        status: Status (optional)
+        effort: Effort level (optional)
+        
+    Returns:
+        Success message with subtask details or error message
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Find the parent task
+        parent_task_gid = None
+        
+        # If it looks like a GID, use it directly
+        if parent_task_name_or_gid.isdigit() and len(parent_task_name_or_gid) > 10:
+            parent_task_gid = parent_task_name_or_gid
+        else:
+            # Search for the parent task by name
+            if not project:
+                return "Error: Project name or GID is required when searching by task name."
+            
+            project_gid = asana_projects.get(project, project)
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+            workspace_gid = me['workspaces'][0]['gid']
+            
+            search_params = {
+                'text': parent_task_name_or_gid,
+                'projects.any': project_gid,
+                'completed': False
+            }
+            
+            tasks = tasks_api.search_tasks_for_workspace(
+                workspace_gid=workspace_gid,
+                opts={'opt_fields': 'name,gid'},
+                **search_params
+            )
+            
+            # Handle response format
+            if isinstance(tasks, dict) and 'data' in tasks:
+                tasks = tasks['data']
+            elif not isinstance(tasks, list):
+                tasks = [tasks] if tasks else []
+            
+            matching_tasks = []
+            for task in tasks:
+                if task['name'].lower() == parent_task_name_or_gid.lower():
+                    matching_tasks.append(task)
+                elif parent_task_name_or_gid.lower() in task['name'].lower():
+                    matching_tasks.append(task)
+            
+            if not matching_tasks:
+                return f"❌ No parent task found matching '{parent_task_name_or_gid}' in project '{project}'"
+            elif len(matching_tasks) > 1:
+                task_list = "\n".join([f"• {task['name']} (GID: {task['gid']})" for task in matching_tasks[:5]])
+                return f"❌ Multiple parent tasks found:\n{task_list}\n\nPlease use a more specific name or the exact GID."
+            else:
+                parent_task_gid = matching_tasks[0]['gid']
+        
+        # Create the subtask
+        subtask_data = _build_task_data(
+            name=subtask_name, notes=notes, assignee=assignee, due_date=due_date,
+            priority=priority, client=client, platform=platform, 
+            status=status, effort=effort
+        )
+        
+        # Add parent relationship
+        subtask_data['parent'] = parent_task_gid
+        
+        result = tasks_api.create_task(
+            body={'data': subtask_data}, 
+            opts={'opt_fields': 'gid,name,parent.name,permalink_url'}
+        )
+        
+        parent_name = result.get('parent', {}).get('name', 'Unknown')
+        return f"✅ Subtask created successfully!\nSubtask: {result['name']}\nParent Task: {parent_name}\nSubtask ID: {result['gid']}\nURL: {result.get('permalink_url', 'N/A')}"
+        
+    except Exception as e:
+        return f"Error creating subtask: {str(e)}"
+
+@mcp.tool()
+def create_multiple_subtasks(
+    parent_task_name_or_gid: str,
+    subtask_list: str,
+    project: str = "",
+    assignee: str = "",
+    due_date: str = "",
+    priority: str = "",
+    client: str = "",
+    platform: str = ""
+) -> str:
+    """
+    Create multiple subtasks under a parent task from a list.
+    
+    Args:
+        parent_task_name_or_gid: Name or GID of the parent task
+        subtask_list: Comma-separated or newline-separated list of subtask names
+        project: Project name to search in (required if using parent task name)
+        assignee: Assignee for all subtasks (optional)
+        due_date: Due date for all subtasks (optional)
+        priority: Priority for all subtasks (optional)
+        client: Client for all subtasks (optional)
+        platform: Platform for all subtasks (optional)
+        
+    Returns:
+        Summary of created subtasks or error message
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Parse the subtask list
+        if '\n' in subtask_list:
+            subtasks = [task.strip() for task in subtask_list.split('\n') if task.strip()]
+        else:
+            subtasks = [task.strip() for task in subtask_list.split(',') if task.strip()]
+        
+        if not subtasks:
+            return "Error: No subtasks provided. Please provide a comma-separated or newline-separated list."
+        
+        # Find the parent task (same logic as create_subtask)
+        parent_task_gid = None
+        parent_task_name = ""
+        
+        if parent_task_name_or_gid.isdigit() and len(parent_task_name_or_gid) > 10:
+            parent_task_gid = parent_task_name_or_gid
+            # Get parent task name for display
+            try:
+                parent_info = tasks_api.get_task(
+                    task_gid=parent_task_gid,
+                    opts={'opt_fields': 'name'}
+                )
+                parent_task_name = parent_info.get('name', 'Unknown')
+            except:
+                parent_task_name = 'Unknown'
+        else:
+            if not project:
+                return "Error: Project name or GID is required when searching by task name."
+            
+            project_gid = asana_projects.get(project, project)
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+            workspace_gid = me['workspaces'][0]['gid']
+            
+            search_params = {
+                'text': parent_task_name_or_gid,
+                'projects.any': project_gid,
+                'completed': False
+            }
+            
+            tasks = tasks_api.search_tasks_for_workspace(
+                workspace_gid=workspace_gid,
+                opts={'opt_fields': 'name,gid'},
+                **search_params
+            )
+            
+            # Handle response format
+            if isinstance(tasks, dict) and 'data' in tasks:
+                tasks = tasks['data']
+            elif not isinstance(tasks, list):
+                tasks = [tasks] if tasks else []
+            
+            matching_tasks = []
+            for task in tasks:
+                if task['name'].lower() == parent_task_name_or_gid.lower():
+                    matching_tasks.append(task)
+                elif parent_task_name_or_gid.lower() in task['name'].lower():
+                    matching_tasks.append(task)
+            
+            if not matching_tasks:
+                return f"❌ No parent task found matching '{parent_task_name_or_gid}' in project '{project}'"
+            elif len(matching_tasks) > 1:
+                task_list = "\n".join([f"• {task['name']} (GID: {task['gid']})" for task in matching_tasks[:5]])
+                return f"❌ Multiple parent tasks found:\n{task_list}\n\nPlease use a more specific name or the exact GID."
+            else:
+                parent_task_gid = matching_tasks[0]['gid']
+                parent_task_name = matching_tasks[0]['name']
+        
+        # Create all subtasks
+        created_subtasks = []
+        failed_subtasks = []
+        
+        for subtask_name in subtasks:
+            try:
+                subtask_data = _build_task_data(
+                    name=subtask_name, assignee=assignee, due_date=due_date,
+                    priority=priority, client=client, platform=platform
+                )
+                subtask_data['parent'] = parent_task_gid
+                
+                result = tasks_api.create_task(
+                    body={'data': subtask_data}, 
+                    opts={'opt_fields': 'gid,name'}
+                )
+                
+                created_subtasks.append(f"✅ {result['name']} (ID: {result['gid']})")
+                
+            except Exception as e:
+                failed_subtasks.append(f"❌ {subtask_name}: {str(e)}")
+        
+        # Build result summary
+        result_msg = f"📋 **Subtask Creation Summary**\n"
+        result_msg += f"**Parent Task:** {parent_task_name}\n\n"
+        
+        if created_subtasks:
+            result_msg += f"**✅ Successfully Created ({len(created_subtasks)}):**\n"
+            result_msg += "\n".join(created_subtasks) + "\n\n"
+        
+        if failed_subtasks:
+            result_msg += f"**❌ Failed ({len(failed_subtasks)}):**\n"
+            result_msg += "\n".join(failed_subtasks) + "\n\n"
+        
+        result_msg += f"**Total:** {len(created_subtasks)} created, {len(failed_subtasks)} failed"
+        
+        return result_msg
+        
+    except Exception as e:
+        return f"Error creating multiple subtasks: {str(e)}"
+
+@mcp.tool()
+def list_subtasks(parent_task_name_or_gid: str, project: str = "") -> str:
+    """
+    List all subtasks of a parent task.
+    
+    Args:
+        parent_task_name_or_gid: Name or GID of the parent task
+        project: Project name to search in (required if using parent task name)
+        
+    Returns:
+        List of subtasks or error message
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Find the parent task (same logic as create_subtask)
+        parent_task_gid = None
+        parent_task_name = ""
+        
+        if parent_task_name_or_gid.isdigit() and len(parent_task_name_or_gid) > 10:
+            parent_task_gid = parent_task_name_or_gid
+            try:
+                parent_info = tasks_api.get_task(
+                    task_gid=parent_task_gid,
+                    opts={'opt_fields': 'name'}
+                )
+                parent_task_name = parent_info.get('name', 'Unknown')
+            except:
+                parent_task_name = 'Unknown'
+        else:
+            if not project:
+                return "Error: Project name or GID is required when searching by task name."
+            
+            project_gid = asana_projects.get(project, project)
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+            workspace_gid = me['workspaces'][0]['gid']
+            
+            search_params = {
+                'text': parent_task_name_or_gid,
+                'projects.any': project_gid,
+                'completed': False
+            }
+            
+            tasks = tasks_api.search_tasks_for_workspace(
+                workspace_gid=workspace_gid,
+                opts={'opt_fields': 'name,gid'},
+                **search_params
+            )
+            
+            # Handle response format
+            if isinstance(tasks, dict) and 'data' in tasks:
+                tasks = tasks['data']
+            elif not isinstance(tasks, list):
+                tasks = [tasks] if tasks else []
+            
+            matching_tasks = []
+            for task in tasks:
+                if task['name'].lower() == parent_task_name_or_gid.lower():
+                    matching_tasks.append(task)
+                elif parent_task_name_or_gid.lower() in task['name'].lower():
+                    matching_tasks.append(task)
+            
+            if not matching_tasks:
+                return f"❌ No parent task found matching '{parent_task_name_or_gid}' in project '{project}'"
+            elif len(matching_tasks) > 1:
+                task_list = "\n".join([f"• {task['name']} (GID: {task['gid']})" for task in matching_tasks[:5]])
+                return f"❌ Multiple parent tasks found:\n{task_list}\n\nPlease use a more specific name or the exact GID."
+            else:
+                parent_task_gid = matching_tasks[0]['gid']
+                parent_task_name = matching_tasks[0]['name']
+        
+        # Get subtasks
+        subtasks = tasks_api.get_subtasks_for_task(
+            task_gid=parent_task_gid,
+            opts={'opt_fields': 'name,gid,completed,due_on,assignee.name'}
+        )
+        
+        # Handle response format
+        if isinstance(subtasks, dict) and 'data' in subtasks:
+            subtasks = subtasks['data']
+        elif not isinstance(subtasks, list):
+            subtasks = [subtasks] if subtasks else []
+        
+        if not subtasks:
+            return f"📋 **Parent Task:** {parent_task_name}\n\n❌ No subtasks found."
+        
+        result = f"📋 **Parent Task:** {parent_task_name}\n"
+        result += f"📝 **Subtasks ({len(subtasks)}):**\n\n"
+        
+        for subtask in subtasks:
+            status = "✅" if subtask.get('completed') else "❌"
+            name = subtask.get('name', 'No name')
+            gid = subtask.get('gid', '')
+            due = subtask.get('due_on', 'No due date')
+            assignee = subtask.get('assignee', {}).get('name', 'Unassigned')
+            
+            result += f"{status} **{name}** (GID: {gid})\n"
+            result += f"   📅 Due: {due} | 👤 Assigned: {assignee}\n\n"
+        
+        return result
+        
+    except Exception as e:
+        return f"Error listing subtasks: {str(e)}"
 
 if __name__ == "__main__":
     mcp.run(transport="http", port=8000)
