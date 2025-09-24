@@ -13,6 +13,13 @@ asana_projects = {
     "Engineering (Data Solutions)": "1199170187515375"
 }
 
+# Custom field mappings (you'll need to replace these GIDs with your actual custom field GIDs)
+asana_custom_fields = {
+    "client": "REPLACE_WITH_CLIENT_FIELD_GID",      # Replace with actual GID
+    "platform": "REPLACE_WITH_PLATFORM_FIELD_GID", # Replace with actual GID
+    # Add more custom fields as needed
+}
+
 # Configure Asana client with access token
 configuration = asana.Configuration()
 configuration.access_token = token
@@ -34,7 +41,9 @@ def create_asana_task(
     project: str = "", 
     assignee_gid: str = "", 
     due_date: str = "",
-    priority: str = ""
+    priority: str = "",
+    client: str = "",
+    platform: str = ""
 ) -> str:
     """
     Create a new task in Asana.
@@ -46,6 +55,8 @@ def create_asana_task(
         assignee_gid: The GID of the user to assign the task to (optional)
         due_date: Due date in YYYY-MM-DD format (optional)
         priority: Task priority - 'low', 'medium', 'high', or 'urgent' (optional)
+        client: Client name for the task (optional)
+        platform: Platform for the task (optional)
         
     Available projects:
         - Analytics Team Status
@@ -83,6 +94,16 @@ def create_asana_task(
         if priority and priority.lower() in priority_mapping:
             task_data['priority'] = priority_mapping[priority.lower()]
         
+        # Add custom fields
+        custom_fields = {}
+        if client and "client" in asana_custom_fields:
+            custom_fields[asana_custom_fields["client"]] = client
+        if platform and "platform" in asana_custom_fields:
+            custom_fields[asana_custom_fields["platform"]] = platform
+        
+        if custom_fields:
+            task_data['custom_fields'] = custom_fields
+        
         result = tasks_api.create_task(
             body={'data': task_data}, 
             opts={'opt_fields': 'gid,name,permalink_url'}
@@ -101,7 +122,9 @@ def update_asana_task(
     notes: str = "",
     completed: str = "",
     due_date: str = "",
-    priority: str = ""
+    priority: str = "",
+    client: str = "",
+    platform: str = ""
 ) -> str:
     """
     Update an existing Asana task. Can find task by name within a project or use direct GID.
@@ -114,6 +137,8 @@ def update_asana_task(
         completed: Mark task as completed - 'true' or 'false' (optional)
         due_date: New due date in YYYY-MM-DD format (optional)
         priority: New priority - 'low', 'medium', 'high', or 'urgent' (optional)
+        client: Client name for the task (optional)
+        platform: Platform for the task (optional)
         
     Available projects:
         - Analytics Team Status
@@ -196,6 +221,16 @@ def update_asana_task(
         }
         if priority and priority.lower() in priority_mapping:
             task_data['priority'] = priority_mapping[priority.lower()]
+        
+        # Add custom fields
+        custom_fields = {}
+        if client and "client" in asana_custom_fields:
+            custom_fields[asana_custom_fields["client"]] = client
+        if platform and "platform" in asana_custom_fields:
+            custom_fields[asana_custom_fields["platform"]] = platform
+        
+        if custom_fields:
+            task_data['custom_fields'] = custom_fields
         
         if not task_data:
             return "Error: No fields provided to update. Please specify at least one field to update."
@@ -301,6 +336,50 @@ def list_available_projects() -> str:
     project_list += "💡 You can use either the project name or GID in create_asana_task and search_asana_tasks functions."
     
     return project_list
+
+@mcp.tool()
+def get_custom_fields_info() -> str:
+    """
+    Get information about custom fields in your workspace to help configure field mappings.
+    
+    Returns:
+        List of custom fields with their GIDs and names
+    """
+    if not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Get the authenticated user first
+        me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+        workspace_gid = me['workspaces'][0]['gid']
+        
+        # Note: Getting custom fields requires the CustomFieldsApi
+        # For now, return instructions on how to find custom field GIDs
+        return """📋 To configure custom fields, you need to find their GIDs:
+
+1. **Using Asana API Explorer:**
+   - Go to https://developers.asana.com/explorer
+   - Use GET /custom_fields with your workspace GID: {workspace_gid}
+   
+2. **Using Browser Developer Tools:**
+   - Open a task with custom fields in Asana web
+   - Open Developer Tools (F12)
+   - Look for API calls containing custom field data
+   
+3. **Current Custom Field Configuration:**
+   - client: {client_gid}
+   - platform: {platform_gid}
+   
+💡 Replace the placeholder GIDs in asana_custom_fields dictionary with actual GIDs from your workspace.
+
+Your workspace GID: {workspace_gid}""".format(
+            workspace_gid=workspace_gid,
+            client_gid=asana_custom_fields.get("client", "NOT_CONFIGURED"),
+            platform_gid=asana_custom_fields.get("platform", "NOT_CONFIGURED")
+        )
+        
+    except Exception as e:
+        return f"Error getting custom fields info: {str(e)}"
 
 @mcp.tool()
 def search_asana_tasks(query: str, project: str = "", completed: str = "false") -> str:
