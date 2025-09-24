@@ -1,2 +1,2 @@
-fastmcp>=0.1.0
+fastmcp
 asana>=3.0.0

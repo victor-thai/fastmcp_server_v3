@@ -19,7 +19,7 @@ asana_client = None
 
 try:
     # Load Asana access token from environment variable
-    token = os.getenv("ASANA-ACCESS-TOKEN")['token']
+    token = os.getenv("ASANA-ACCESS-TOKEN")
     
     if not token:
         raise ValueError("ASANA-ACCESS-TOKEN environment variable not set")
