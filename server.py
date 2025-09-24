@@ -13,11 +13,87 @@ asana_projects = {
     "Engineering (Data Solutions)": "1199170187515375"
 }
 
+# Dynamic user cache - automatically populated
+_user_cache = {}
+_cache_timestamp = None
+_cache_duration = 3600  # Cache for 1 hour
+
 # Custom field mappings (you'll need to replace these GIDs with your actual custom field GIDs)
 asana_custom_fields = {
-    "client": "REPLACE_WITH_CLIENT_FIELD_GID",      # Replace with actual GID
-    "platform": "REPLACE_WITH_PLATFORM_FIELD_GID", # Replace with actual GID
-    # Add more custom fields as needed
+    "Clients": "1200882907169711",      # Clients field
+    "Platform": "1206936878420527",     # Platform field (multi-enum)
+    "Priority": "1199170187515380",     # Priority field
+    "Task Progress": "1200841656461302", # Task Progress field
+    "Status": "1200907941118113",       # Status field
+    "Effort": "1200907941118107",       # Effort field
+}
+
+# Custom field options mappings (for enum/dropdown fields)
+# Replace with your actual option GIDs from Asana
+asana_field_options = {
+    "Clients": {
+        "Toyota Norcal": "1200882907169712",
+        "VSP": "1200882907169713",
+        "Upwork": "1200886612503481",
+        "McD": "1200886612503484",
+        "SCCBS": "1200886612503489",
+        "DCCU": "1200886612504515",
+        "Workrise": "1200886612504519",
+        "Edwards": "1200886612504523",
+        "H&L": "1200886588859928",
+        "AAA": "1200894863268356",
+        "OMCA": "1201000955909543",
+        "TNTP": "1202825105164617",
+        "NC Wesleyan University (Liaison)": "1203145583060478",
+        "Hub Garage": "1203247286336143",
+        "Toyota + McD": "1204261931716483",
+        "DuckHorn": "1208345915618445",
+        "Toyota KC": "1208524887452169",
+        "Qualified": "1209674556515681",
+        "New Business/Not Listed Above": "1210702117547501",
+        "Grocery Outlet": "1211333012050767"
+    },
+    "Platform": {
+        # Platform options from your Platform field (multi-enum)
+        "Nexxen / Amobee": "1206936878420530",
+        "Amazon": "1206936878420531",
+        "The Trade Desk": "1206936878420532",
+        "CM360 (Direct Buys / PMAX)": "1206936878420533",
+        "SA360 (Search)": "1206936878420534",
+        "Google Ads (Youtube)": "1206936878420535",
+        "Pinterest": "1206936878420536",
+        "Meta": "1206936878420537",
+        "TikTok": "1206936878420538",
+        "Snapchat": "1206936878420539",
+        "Reddit": "1206936878420540",
+        "LinkedIn": "1206936878420541",
+        "Twitter / X": "1206936878420542",
+        "AdMedia (Search)": "1206936878420543",
+        "Yelp": "1206937011155710",
+        "Next Door": "1206937011155711"
+    },
+    "Priority": {
+        "Low": "1199170187515383",
+        "Medium": "1199170187515382",
+        "High": "1199170187515381"
+    },
+    "Task Progress": {
+        "Not Started": "1200841656461303",
+        "In Progress": "1200841656461304",
+        "Waiting": "1200841656461305",
+        "Deferred": "1200841656461306",
+        "Done": "1200841656461307"
+    },
+    "Status": {
+        "Complete": "1200907941118114",
+        "Blocked": "1200907941118115",
+        "In Progress": "1200907941118116"
+    },
+    "Effort": {
+        "Small": "1200907941118108",
+        "Medium": "1200907941118109",
+        "Large": "1200907941118110"
+    }
 }
 
 # Configure Asana client with access token
@@ -34,33 +110,267 @@ users_api = asana.UsersApi(api_client)
 
 # Asana Task Management Tools
 
+def get_custom_field_value(field_name: str, value: str) -> str:
+    """
+    Get the option GID for a custom field enum value.
+    
+    Args:
+        field_name: The name of the custom field (e.g., 'client', 'platform', 'priority')
+        value: The option value (e.g., 'web', 'high', 'acme corp')
+        
+    Returns:
+        The option GID if found, otherwise the original value
+    """
+    if not value:
+        return ""
+    
+    # Convert to lowercase for case-insensitive matching
+    value_lower = value.lower()
+    
+    # Check if we have options for this field
+    if field_name in asana_field_options:
+        field_options = asana_field_options[field_name]
+        
+        # Try exact match first
+        if value_lower in field_options:
+            return field_options[value_lower]
+        
+        # Try partial match
+        for option_name, option_gid in field_options.items():
+            if value_lower in option_name.lower() or option_name.lower() in value_lower:
+                return option_gid
+    
+    # If no match found, return original value (might be a GID already)
+    return value
+
+def _fetch_workspace_users():
+    """
+    Fetch and cache workspace users.
+    """
+    global _user_cache, _cache_timestamp
+    import time
+    
+    # Check if cache is still valid
+    current_time = time.time()
+    if _cache_timestamp and (current_time - _cache_timestamp) < _cache_duration:
+        return _user_cache
+    
+    try:
+        # Get workspace
+        me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+        workspace_gid = me['workspaces'][0]['gid']
+        
+        # Fetch users
+        users = users_api.get_users_for_workspace(
+            workspace_gid=workspace_gid,
+            opts={'opt_fields': 'gid,name,email'}
+        )
+        
+        # Build cache with multiple lookup keys
+        _user_cache = {}
+        for user in users:
+            name = user.get('name', '')
+            email = user.get('email', '')
+            gid = user['gid']
+            
+            # Add exact name
+            if name:
+                _user_cache[name.lower()] = gid
+                
+                # Add first name + last initial (e.g., "John D" for "John Doe")
+                name_parts = name.split()
+                if len(name_parts) >= 2:
+                    first_last_initial = f"{name_parts[0]} {name_parts[-1][0]}".lower()
+                    _user_cache[first_last_initial] = gid
+                    
+                    # Add first name only
+                    _user_cache[name_parts[0].lower()] = gid
+            
+            # Add email
+            if email:
+                _user_cache[email.lower()] = gid
+            
+            # Add GID (for direct lookups)
+            _user_cache[gid] = gid
+        
+        _cache_timestamp = current_time
+        return _user_cache
+        
+    except Exception as e:
+        print(f"Warning: Could not fetch workspace users: {e}")
+        return _user_cache
+
+def resolve_assignee(assignee: str) -> str:
+    """
+    Intelligently resolve assignee name to GID with fuzzy matching.
+    
+    Args:
+        assignee: Full name, partial name, email, or GID
+        
+    Returns:
+        The assignee GID, or original value if not found
+    """
+    if not assignee:
+        return ""
+    
+    assignee_lower = assignee.lower().strip()
+    
+    # If it looks like a GID, return as-is
+    if assignee.isdigit() and len(assignee) > 10:
+        return assignee
+    
+    # Fetch/update user cache
+    user_cache = _fetch_workspace_users()
+    
+    # Exact match
+    if assignee_lower in user_cache:
+        return user_cache[assignee_lower]
+    
+    # Fuzzy matching for partial names
+    best_match = None
+    best_score = 0
+    
+    for cached_key, gid in user_cache.items():
+        if cached_key == gid:  # Skip GID entries
+            continue
+            
+        # Check if assignee is contained in cached name
+        if assignee_lower in cached_key:
+            score = len(assignee_lower) / len(cached_key)  # Prefer longer matches
+            if score > best_score:
+                best_match = gid
+                best_score = score
+        
+        # Check if cached name is contained in assignee
+        elif cached_key in assignee_lower:
+            score = len(cached_key) / len(assignee_lower)
+            if score > best_score:
+                best_match = gid
+                best_score = score
+    
+    # Return best match if confidence is high enough
+    if best_match and best_score > 0.3:
+        return best_match
+    
+    # If no match found, assume it's already a GID or email
+    return assignee
+
+def _build_task_data(name: str = "", notes: str = "", project: str = "", assignee: str = "", 
+                    due_date: str = "", priority: str = "", client: str = "", platform: str = "", 
+                    status: str = "", effort: str = "", completed: str = "", new_name: str = "") -> dict:
+    """
+    Build task data dictionary with all validations and transformations.
+    """
+    from datetime import datetime, timedelta
+    
+    task_data = {}
+    
+    # Basic fields
+    if name:
+        task_data['name'] = name
+    if new_name:
+        task_data['name'] = new_name
+    if notes:
+        task_data['notes'] = notes
+    if completed and completed.lower() in ['true', 'false']:
+        task_data['completed'] = completed.lower() == 'true'
+    
+    # Project
+    if project:
+        project_gid = asana_projects.get(project, project)
+        task_data['projects'] = [project_gid]
+    
+    # Assignee with intelligent resolution
+    if assignee:
+        task_data['assignee'] = resolve_assignee(assignee)
+    
+    # Due date with flexible parsing
+    if due_date:
+        formatted_date = _parse_due_date(due_date)
+        if formatted_date:
+            task_data['due_on'] = formatted_date
+    
+    # Priority
+    if priority:
+        priority_map = {'low': 'Low', 'medium': 'Medium', 'high': 'High', 'urgent': 'Urgent'}
+        if priority.lower() in priority_map:
+            task_data['priority'] = priority_map[priority.lower()]
+    
+    # Custom fields
+    custom_fields = {}
+    field_mappings = [
+        (client, "Clients"), (platform, "Platform"), 
+        (status, "Status"), (effort, "Effort")
+    ]
+    
+    for value, field_name in field_mappings:
+        if value and field_name in asana_custom_fields:
+            option_gid = get_custom_field_value(field_name, value)
+            if option_gid:
+                custom_fields[asana_custom_fields[field_name]] = option_gid
+    
+    if custom_fields:
+        task_data['custom_fields'] = custom_fields
+    
+    return task_data
+
+def _parse_due_date(due_date: str) -> str:
+    """
+    Parse due date with support for relative and absolute formats.
+    """
+    if not due_date:
+        return ""
+    
+    from datetime import datetime, timedelta
+    
+    # Handle relative dates
+    if due_date.lower() in ['today', 'now']:
+        return datetime.now().strftime('%Y-%m-%d')
+    elif due_date.lower() == 'tomorrow':
+        return (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    elif due_date.lower().endswith('days'):
+        try:
+            days = int(due_date.lower().replace('days', '').strip())
+            return (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+    
+    # Try various date formats
+    for fmt in ['%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y', '%d/%m/%Y', '%Y/%m/%d', '%m/%d/%y', '%m-%d-%y']:
+        try:
+            return datetime.strptime(due_date, fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    
+    return due_date  # Return as-is if no format matched
+
 @mcp.tool()
 def create_asana_task(
     name: str, 
     notes: str = "", 
     project: str = "", 
-    assignee_gid: str = "", 
+    assignee: str = "", 
     due_date: str = "",
     priority: str = "",
     client: str = "",
-    platform: str = ""
+    platform: str = "",
+    status: str = "",
+    effort: str = ""
 ) -> str:
     """
-    Create a new task in Asana.
+    Create a new task in Asana with intelligent assignee matching.
     
     Args:
         name: The name/title of the task
         notes: Detailed description of the task (optional)
-        project: Project name (e.g. "Analytics Team Status") or GID to add the task to (optional)
-        assignee_gid: The GID of the user to assign the task to (optional)
-        due_date: Due date in YYYY-MM-DD format (optional)
-        priority: Task priority - 'low', 'medium', 'high', or 'urgent' (optional)
-        client: Client name for the task (optional)
-        platform: Platform for the task (optional)
-        
-    Available projects:
-        - Analytics Team Status
-        - Engineering (Data Solutions)
+        project: Project name or GID (optional)
+        assignee: Full name, partial name, email, or GID (optional)
+        due_date: Due date - supports 'today', 'tomorrow', '5 days', YYYY-MM-DD, MM/DD/YYYY, etc. (optional)
+        priority: 'low', 'medium', 'high', or 'urgent' (optional)
+        client: Client name (optional)
+        platform: Platform name (optional)
+        status: Status (optional)
+        effort: Effort level (optional)
         
     Returns:
         Success message with task details or error message
@@ -69,40 +379,11 @@ def create_asana_task(
         return "Error: Asana client not initialized. Please check the access token."
     
     try:
-        task_data = {
-            'name': name,
-            'notes': notes
-        }
-        
-        # Add optional fields if provided
-        if project:
-            # Check if project is a name in our mapping, otherwise use as GID
-            project_gid = asana_projects.get(project, project)
-            task_data['projects'] = [project_gid]
-        if assignee_gid:
-            task_data['assignee'] = assignee_gid
-        if due_date:
-            task_data['due_on'] = due_date
-        
-        # Map priority to Asana's format
-        priority_mapping = {
-            'low': 'Low',
-            'medium': 'Medium', 
-            'high': 'High',
-            'urgent': 'Urgent'
-        }
-        if priority and priority.lower() in priority_mapping:
-            task_data['priority'] = priority_mapping[priority.lower()]
-        
-        # Add custom fields
-        custom_fields = {}
-        if client and "client" in asana_custom_fields:
-            custom_fields[asana_custom_fields["client"]] = client
-        if platform and "platform" in asana_custom_fields:
-            custom_fields[asana_custom_fields["platform"]] = platform
-        
-        if custom_fields:
-            task_data['custom_fields'] = custom_fields
+        task_data = _build_task_data(
+            name=name, notes=notes, project=project, assignee=assignee,
+            due_date=due_date, priority=priority, client=client, 
+            platform=platform, status=status, effort=effort
+        )
         
         result = tasks_api.create_task(
             body={'data': task_data}, 
@@ -122,9 +403,12 @@ def update_asana_task(
     notes: str = "",
     completed: str = "",
     due_date: str = "",
+    assignee: str = "",
     priority: str = "",
     client: str = "",
-    platform: str = ""
+    platform: str = "",
+    status: str = "",
+    effort: str = ""
 ) -> str:
     """
     Update an existing Asana task. Can find task by name within a project or use direct GID.
@@ -135,10 +419,13 @@ def update_asana_task(
         new_name: New name/title for the task (optional)
         notes: New description for the task (optional)
         completed: Mark task as completed - 'true' or 'false' (optional)
-        due_date: New due date in YYYY-MM-DD format (optional)
+        due_date: New due date in various formats - YYYY-MM-DD, MM/DD/YYYY, 'today', 'tomorrow', '5 days' (optional)
+        assignee: Full name, partial name, email, or GID (optional)
         priority: New priority - 'low', 'medium', 'high', or 'urgent' (optional)
         client: Client name for the task (optional)
         platform: Platform for the task (optional)
+        status: Status for the task (optional)
+        effort: Effort level for the task (optional)
         
     Available projects:
         - Analytics Team Status
@@ -199,38 +486,12 @@ def update_asana_task(
                 task_gid = matching_tasks[0]['gid']
                 print(f"✅ Found task: {matching_tasks[0]['name']} (GID: {task_gid})")
         
-        # Build update data
-        task_data = {}
-        
-        # Add fields to update if provided
-        if new_name:
-            task_data['name'] = new_name
-        if notes:
-            task_data['notes'] = notes
-        if completed.lower() in ['true', 'false']:
-            task_data['completed'] = completed.lower() == 'true'
-        if due_date:
-            task_data['due_on'] = due_date
-            
-        # Map priority to Asana's format
-        priority_mapping = {
-            'low': 'Low',
-            'medium': 'Medium',
-            'high': 'High', 
-            'urgent': 'Urgent'
-        }
-        if priority and priority.lower() in priority_mapping:
-            task_data['priority'] = priority_mapping[priority.lower()]
-        
-        # Add custom fields
-        custom_fields = {}
-        if client and "client" in asana_custom_fields:
-            custom_fields[asana_custom_fields["client"]] = client
-        if platform and "platform" in asana_custom_fields:
-            custom_fields[asana_custom_fields["platform"]] = platform
-        
-        if custom_fields:
-            task_data['custom_fields'] = custom_fields
+        # Build update data using shared function
+        task_data = _build_task_data(
+            new_name=new_name, notes=notes, assignee=assignee, due_date=due_date,
+            priority=priority, client=client, platform=platform, 
+            status=status, effort=effort, completed=completed
+        )
         
         if not task_data:
             return "Error: No fields provided to update. Please specify at least one field to update."
@@ -337,49 +598,162 @@ def list_available_projects() -> str:
     
     return project_list
 
+
 @mcp.tool()
-def get_custom_fields_info() -> str:
+def list_custom_field_options() -> str:
     """
-    Get information about custom fields in your workspace to help configure field mappings.
+    List all available options for custom fields (client, platform, priority).
     
     Returns:
-        List of custom fields with their GIDs and names
+        List of available options for each custom field
+    """
+    options_info = "📋 Available Custom Field Options:\n\n"
+    
+    for field_name, field_options in asana_field_options.items():
+        options_info += f"**{field_name.title()}:**\n"
+        if field_options:
+            for option_name, option_gid in field_options.items():
+                configured = "✅" if not option_gid.startswith("REPLACE_") else "❌"
+                options_info += f"  {configured} {option_name}\n"
+        else:
+            options_info += "  No options configured\n"
+        options_info += "\n"
+    
+    options_info += """💡 **Usage Examples:**
+• create_asana_task("Fix bug", client="acme corp", platform="web")
+• update_asana_task("Fix bug", project="Engineering", client="tech solutions")
+
+⚙️ **Configuration Status:**
+❌ = Option GID needs to be configured
+✅ = Option GID is configured
+
+To configure option GIDs, replace the placeholder values in asana_field_options dictionary."""
+    
+    return options_info
+
+@mcp.tool()
+def test_assignee_resolution(test_name: str) -> str:
+    """
+    Test the assignee resolution system with various name formats.
+    
+    Args:
+        test_name: Name to test (e.g., "John", "Jane Smith", "john@company.com")
+        
+    Returns:
+        Resolution result showing what GID would be used
     """
     if not users_api:
         return "Error: Asana client not initialized. Please check the access token."
     
     try:
-        # Get the authenticated user first
+        resolved_gid = resolve_assignee(test_name)
+        
+        # Get user cache to show available options
+        user_cache = _fetch_workspace_users()
+        
+        result = f"🔍 **Testing assignee resolution for: '{test_name}'**\n\n"
+        result += f"✅ **Resolved to GID:** {resolved_gid}\n\n"
+        
+        # Show if we found a match in cache
+        found_match = False
+        for cached_key, gid in user_cache.items():
+            if gid == resolved_gid and cached_key != gid:
+                result += f"📝 **Matched against:** {cached_key}\n"
+                found_match = True
+                break
+        
+        if not found_match and resolved_gid != test_name:
+            result += "📝 **Match type:** Direct GID or email\n"
+        elif not found_match:
+            result += "📝 **Match type:** No match found (returned as-is)\n"
+        
+        result += "\n💡 **Available team members for reference:**\n"
+        
+        # Show first few team members as examples
         me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
         workspace_gid = me['workspaces'][0]['gid']
-        
-        # Note: Getting custom fields requires the CustomFieldsApi
-        # For now, return instructions on how to find custom field GIDs
-        return """📋 To configure custom fields, you need to find their GIDs:
-
-1. **Using Asana API Explorer:**
-   - Go to https://developers.asana.com/explorer
-   - Use GET /custom_fields with your workspace GID: {workspace_gid}
-   
-2. **Using Browser Developer Tools:**
-   - Open a task with custom fields in Asana web
-   - Open Developer Tools (F12)
-   - Look for API calls containing custom field data
-   
-3. **Current Custom Field Configuration:**
-   - client: {client_gid}
-   - platform: {platform_gid}
-   
-💡 Replace the placeholder GIDs in asana_custom_fields dictionary with actual GIDs from your workspace.
-
-Your workspace GID: {workspace_gid}""".format(
+        users = users_api.get_users_for_workspace(
             workspace_gid=workspace_gid,
-            client_gid=asana_custom_fields.get("client", "NOT_CONFIGURED"),
-            platform_gid=asana_custom_fields.get("platform", "NOT_CONFIGURED")
+            opts={'opt_fields': 'gid,name,email'}
         )
         
+        for i, user in enumerate(users[:3]):  # Show first 3 users
+            name = user.get('name', 'No name')
+            result += f"• {name}\n"
+            if name:
+                name_parts = name.split()
+                if len(name_parts) >= 2:
+                    result += f"  - Try: '{name_parts[0]}' or '{name_parts[0]} {name_parts[-1][0]}'\n"
+        
+        if len(users) > 3:
+            result += f"... and {len(users) - 3} more team members\n"
+        
+        return result
+        
     except Exception as e:
-        return f"Error getting custom fields info: {str(e)}"
+        return f"Error testing assignee resolution: {str(e)}"
+
+@mcp.tool()
+def get_team_members() -> str:
+    """
+    Get team members from your workspace with intelligent name matching.
+    
+    Returns:
+        List of team members showing how they can be referenced
+    """
+    if not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Force refresh cache and get users
+        global _cache_timestamp
+        _cache_timestamp = None  # Force refresh
+        user_cache = _fetch_workspace_users()
+        
+        if not user_cache:
+            return "❌ No team members found or unable to fetch from workspace."
+        
+        # Get actual user details
+        me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+        workspace_gid = me['workspaces'][0]['gid']
+        users = users_api.get_users_for_workspace(
+            workspace_gid=workspace_gid,
+            opts={'opt_fields': 'gid,name,email'}
+        )
+        
+        result = "👥 **Team Members (you can use any of these formats):**\n\n"
+        
+        for user in users:
+            name = user.get('name', 'No name')
+            email = user.get('email', 'No email')
+            gid = user['gid']
+            
+            result += f"**{name}**\n"
+            result += f"  • Full name: \"{name}\"\n"
+            
+            if name:
+                name_parts = name.split()
+                if len(name_parts) >= 2:
+                    result += f"  • Short form: \"{name_parts[0]} {name_parts[-1][0]}\"\n"
+                    result += f"  • First name: \"{name_parts[0]}\"\n"
+            
+            if email:
+                result += f"  • Email: \"{email}\"\n"
+            
+            result += f"  • GID: {gid}\n\n"
+        
+        result += "💡 **Usage Examples:**\n"
+        result += '• create_asana_task("Fix bug", assignee="John Doe")\n'
+        result += '• create_asana_task("Fix bug", assignee="John D")\n'
+        result += '• create_asana_task("Fix bug", assignee="John")\n'
+        result += '• create_asana_task("Fix bug", assignee="john@company.com")\n\n'
+        result += '💡 **Test the resolution:** Use test_assignee_resolution("Your Name") to see how names are matched.\n'
+        
+        return result
+        
+    except Exception as e:
+        return f"Error getting team members: {str(e)}"
+
 
 @mcp.tool()
 def search_asana_tasks(query: str, project: str = "", completed: str = "false") -> str:
