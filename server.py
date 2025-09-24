@@ -1,7 +1,4 @@
-from fastmcp import FastMCP, Client
-from typing import Any, Optional, List, Dict
-import datetime
-import json
+from fastmcp import FastMCP
 import asana
 import os
 
