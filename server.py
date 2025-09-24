@@ -8,6 +8,11 @@ mcp = FastMCP("AsanaTaskManager")
 # Initialize Asana client using access token
 token = os.getenv("ASANA_ACCESS_TOKEN")
 
+asana_projects = {
+    "Analytics Team Status": "1200797787407318",
+    "Engineering (Data Solutions)": "1199170187515375"
+}
+
 # Configure Asana client with access token
 configuration = asana.Configuration()
 configuration.access_token = token
