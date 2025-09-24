@@ -6,7 +6,7 @@ import os
 mcp = FastMCP("AsanaTaskManager")
 
 # Initialize Asana client using access token
-token = os.get_env("ASANA-ACCESS-TOKEN")
+token = os.getenv("ASANA_ACCESS_TOKEN")
 
 # Configure Asana client with access token
 configuration = asana.Configuration()
