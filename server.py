@@ -145,33 +145,60 @@ def get_custom_field_value(field_name: str, value: str) -> str:
 
 def _fetch_workspace_users():
     """
-    Fetch and cache workspace users.
+    Fetch and cache workspace users with detailed error handling.
     """
     global _user_cache, _cache_timestamp
     import time
     
     # Check if cache is still valid
     current_time = time.time()
-    if _cache_timestamp and (current_time - _cache_timestamp) < _cache_duration:
+    if _cache_timestamp and (current_time - _cache_timestamp) < _cache_duration and _user_cache:
         return _user_cache
     
+    if not users_api:
+        print("Error: users_api not initialized")
+        return {}
+    
     try:
-        # Get workspace
+        # Get workspace with better error handling
         me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-        workspace_gid = me['workspaces'][0]['gid']
+        if not me.get('workspaces'):
+            print("Error: No workspaces found for current user")
+            return {}
         
-        # Fetch users
-        users = users_api.get_users_for_workspace(
+        workspace_gid = me['workspaces'][0]['gid']
+        print(f"Debug: Using workspace GID: {workspace_gid}")
+        
+        # Fetch users with better error handling
+        users_response = users_api.get_users_for_workspace(
             workspace_gid=workspace_gid,
             opts={'opt_fields': 'gid,name,email'}
         )
         
+        # Handle both list and dict responses
+        if isinstance(users_response, dict) and 'data' in users_response:
+            users = users_response['data']
+        elif isinstance(users_response, list):
+            users = users_response
+        else:
+            users = [users_response] if users_response else []
+        
+        print(f"Debug: Found {len(users)} users in workspace")
+        
         # Build cache with multiple lookup keys
         _user_cache = {}
         for user in users:
-            name = user.get('name', '')
-            email = user.get('email', '')
-            gid = user['gid']
+            if not isinstance(user, dict):
+                continue
+                
+            name = user.get('name', '').strip()
+            email = user.get('email', '').strip()
+            gid = user.get('gid', '').strip()
+            
+            if not gid:
+                continue
+                
+            print(f"Debug: Processing user - Name: '{name}', Email: '{email}', GID: {gid}")
             
             # Add exact name
             if name:
@@ -194,11 +221,14 @@ def _fetch_workspace_users():
             _user_cache[gid] = gid
         
         _cache_timestamp = current_time
+        print(f"Debug: User cache built with {len(_user_cache)} entries")
         return _user_cache
         
     except Exception as e:
-        print(f"Warning: Could not fetch workspace users: {e}")
-        return _user_cache
+        print(f"Error fetching workspace users: {str(e)}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
+        return _user_cache if _user_cache else {}
 
 def resolve_assignee(assignee: str) -> str:
     """
@@ -632,6 +662,89 @@ To configure option GIDs, replace the placeholder values in asana_field_options 
     return options_info
 
 @mcp.tool()
+def find_team_member_gid(full_name: str) -> str:
+    """
+    Search for a team member by their full name and return their GID.
+    
+    Args:
+        full_name: The full name of the team member to search for
+        
+    Returns:
+        The team member's GID and details, or error message if not found
+    """
+    if not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    if not full_name or not full_name.strip():
+        return "Error: Please provide a name to search for."
+    
+    try:
+        # Force refresh cache to get latest users
+        global _cache_timestamp
+        _cache_timestamp = None  # Force refresh
+        user_cache = _fetch_workspace_users()
+        
+        if not user_cache:
+            return "❌ Unable to fetch team members from workspace. Please check your Asana access token and permissions."
+        
+        search_name = full_name.lower().strip()
+        
+        # Try exact match first
+        if search_name in user_cache:
+            gid = user_cache[search_name]
+            return f"✅ **Found exact match!**\nName: {full_name}\nGID: {gid}\n\nYou can now use '{full_name}' as assignee in create_asana_task() and update_asana_task()."
+        
+        # Try partial matches
+        matches = []
+        for cached_name, gid in user_cache.items():
+            if cached_name == gid:  # Skip GID entries
+                continue
+            if search_name in cached_name or cached_name in search_name:
+                matches.append((cached_name, gid))
+        
+        if matches:
+            result = f"🔍 **Found {len(matches)} potential match(es) for '{full_name}':**\n\n"
+            for cached_name, gid in matches[:5]:  # Show top 5 matches
+                result += f"• **{cached_name.title()}** → GID: {gid}\n"
+            
+            if len(matches) == 1:
+                result += f"\n✅ **Best match:** {matches[0][0].title()}\nGID: {matches[0][1]}\n"
+            
+            return result
+        else:
+            # Show available team members for reference
+            result = f"❌ **No matches found for '{full_name}'**\n\n📋 **Available team members:**\n"
+            
+            # Get actual user details for display
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+            workspace_gid = me['workspaces'][0]['gid']
+            users_response = users_api.get_users_for_workspace(
+                workspace_gid=workspace_gid,
+                opts={'opt_fields': 'gid,name,email'}
+            )
+            
+            # Handle response format
+            if isinstance(users_response, dict) and 'data' in users_response:
+                users = users_response['data']
+            elif isinstance(users_response, list):
+                users = users_response
+            else:
+                users = [users_response] if users_response else []
+            
+            for user in users[:10]:  # Show first 10 users
+                name = user.get('name', 'No name')
+                gid = user.get('gid', '')
+                result += f"• **{name}** (GID: {gid})\n"
+            
+            if len(users) > 10:
+                result += f"... and {len(users) - 10} more team members\n"
+            
+            return result
+        
+    except Exception as e:
+        return f"Error searching for team member: {str(e)}"
+
+@mcp.tool()
 def test_assignee_resolution(test_name: str) -> str:
     """
     Test the assignee resolution system with various name formats.
@@ -711,33 +824,47 @@ def get_team_members() -> str:
         user_cache = _fetch_workspace_users()
         
         if not user_cache:
-            return "❌ No team members found or unable to fetch from workspace."
+            return "❌ No team members found or unable to fetch from workspace. Please check your Asana access token and permissions."
         
         # Get actual user details
         me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
         workspace_gid = me['workspaces'][0]['gid']
-        users = users_api.get_users_for_workspace(
+        users_response = users_api.get_users_for_workspace(
             workspace_gid=workspace_gid,
             opts={'opt_fields': 'gid,name,email'}
         )
         
-        result = "👥 **Team Members (you can use any of these formats):**\n\n"
+        # Handle response format
+        if isinstance(users_response, dict) and 'data' in users_response:
+            users = users_response['data']
+        elif isinstance(users_response, list):
+            users = users_response
+        else:
+            users = [users_response] if users_response else []
+        
+        if not users:
+            return f"❌ No users found in workspace {workspace_gid}. Please check your permissions."
+        
+        result = f"👥 **Team Members ({len(users)} found):**\n\n"
         
         for user in users:
+            if not isinstance(user, dict):
+                continue
+                
             name = user.get('name', 'No name')
             email = user.get('email', 'No email')
-            gid = user['gid']
+            gid = user.get('gid', 'No GID')
             
             result += f"**{name}**\n"
             result += f"  • Full name: \"{name}\"\n"
             
-            if name:
+            if name and name != 'No name':
                 name_parts = name.split()
                 if len(name_parts) >= 2:
                     result += f"  • Short form: \"{name_parts[0]} {name_parts[-1][0]}\"\n"
                     result += f"  • First name: \"{name_parts[0]}\"\n"
             
-            if email:
+            if email and email != 'No email':
                 result += f"  • Email: \"{email}\"\n"
             
             result += f"  • GID: {gid}\n\n"
@@ -747,6 +874,9 @@ def get_team_members() -> str:
         result += '• create_asana_task("Fix bug", assignee="John D")\n'
         result += '• create_asana_task("Fix bug", assignee="John")\n'
         result += '• create_asana_task("Fix bug", assignee="john@company.com")\n\n'
+        result += f'📋 **Workspace Info:** {workspace_gid}\n'
+        result += f'💾 **Cache Status:** {len(user_cache)} entries cached\n\n'
+        result += '💡 **Find a specific GID:** Use find_team_member_gid("Full Name") to search for someone specific.\n'
         result += '💡 **Test the resolution:** Use test_assignee_resolution("Your Name") to see how names are matched.\n'
         
         return result
