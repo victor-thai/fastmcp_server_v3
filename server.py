@@ -17,96 +17,12 @@ mcp = FastMCP("AsanaTaskManager")
 # Initialize Asana client using environment variable
 asana_client = None
 
-try:
-    # Load Asana access token from environment variable
-    token = os.getenv("ASANA-ACCESS-TOKEN")
+# Load Asana access token from environment variable
+token = os.getenv("ASANA-ACCESS-TOKEN")
+# Initialize Asana client with the token
+asana_client = asana.Client.access_token(token)
     
-    if not token:
-        raise ValueError("ASANA-ACCESS-TOKEN environment variable not set")
-    
-    # Initialize Asana client with the token
-    asana_client = asana.Client.access_token(token)
-    print("✅ Asana client initialized successfully using environment variable")
-except Exception as e:
-    print(f"⚠️  Failed to load Asana credentials from environment variable: {e}")
-    print("   Asana features will be disabled. Please set the ASANA-ACCESS-TOKEN environment variable.")
 
-@mcp.tool()
-def greet(name: str) -> str:
-    """
-    Return a friendly greeting.
-    
-    Args:
-        name: The name of the person to greet
-    
-    Returns:
-        A personalized greeting message
-    """
-    return f"Hello, {name}! Welcome to FastMCP server."
-
-@mcp.tool()
-def echo(text: str) -> str:
-    """
-    Echo the provided text back to the caller.
-    
-    Args:
-        text: The text to echo back
-        
-    Returns:
-        The same text that was provided
-    """
-    return text
-
-@mcp.tool()
-def get_current_time() -> str:
-    """
-    Get the current date and time.
-    
-    Returns:
-        Current timestamp as a formatted string
-    """
-    now = datetime.datetime.now()
-    return now.strftime("%Y-%m-%d %H:%M:%S")
-
-@mcp.tool()
-def calculate(expression: str) -> str:
-    """
-    Safely evaluate a mathematical expression.
-    
-    Args:
-        expression: Mathematical expression to evaluate (e.g., "2 + 3 * 4")
-        
-    Returns:
-        The result of the calculation or an error message
-    """
-    try:
-        # Only allow safe mathematical operations
-        allowed_chars = set('0123456789+-*/.() ')
-        if not all(c in allowed_chars for c in expression):
-            return "Error: Invalid characters in expression. Only numbers and +, -, *, /, (, ) are allowed."
-        
-        result = eval(expression)
-        return str(result)
-    except Exception as e:
-        return f"Error calculating expression: {str(e)}"
-
-@mcp.tool()
-def format_json(json_string: str, indent: int = 2) -> str:
-    """
-    Format a JSON string with proper indentation.
-    
-    Args:
-        json_string: The JSON string to format
-        indent: Number of spaces for indentation (default: 2)
-        
-    Returns:
-        Formatted JSON string or error message
-    """
-    try:
-        parsed = json.loads(json_string)
-        return json.dumps(parsed, indent=indent, ensure_ascii=False)
-    except json.JSONDecodeError as e:
-        return f"Error: Invalid JSON - {str(e)}"
 
 # Asana Task Management Tools
 
@@ -344,20 +260,4 @@ def search_asana_tasks(query: str, project_gid: str = "", completed: str = "fals
         return f"Error searching tasks: {str(e)}"
 
 if __name__ == "__main__":
-    # This allows the server to be run directly for testing
-    # In production, FastMCP Cloud will handle the server startup
-    print("FastMCP Server with Asana Integration initialized with tools:")
-    print("\n🔧 Utility Tools:")
-    print("- greet: Return a friendly greeting")
-    print("- echo: Echo text back")
-    print("- get_current_time: Get current timestamp")
-    print("- calculate: Evaluate mathematical expressions")
-    print("- format_json: Format JSON with proper indentation")
-    print("\n📋 Asana Task Management Tools:")
-    print("- create_asana_task: Create new tasks in Asana")
-    print("- update_asana_task: Update existing Asana tasks")
-    print("- get_asana_task: Get details of a specific task")
-    print("- list_asana_projects: List all accessible projects")
-    print("- search_asana_tasks: Search for tasks by query")
-    print(f"\n🔐 Asana Status: {'✅ Connected' if asana_client else '❌ Not configured'}")
-    print("\nServer is ready for deployment to FastMCP Cloud!")
+    mcp.run(transport="http", port=8000)
