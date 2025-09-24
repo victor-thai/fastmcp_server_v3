@@ -879,6 +879,8 @@ def get_team_members() -> str:
         result += '💡 **Find a specific GID:** Use find_team_member_gid("Full Name") to search for someone specific.\n'
         result += '💡 **Test the resolution:** Use test_assignee_resolution("Your Name") to see how names are matched.\n'
         result += '📝 **Create subtasks:** Use create_subtask() or create_multiple_subtasks() to add subtasks under existing tasks.\n'
+        result += '🔗 **Dependencies:** Use add_task_dependency() or create_subtasks_with_dependencies() for task sequencing.\n'
+        result += '🔄 **Move tasks:** Use move_task_to_project() or move_multiple_tasks() to move tasks between projects.\n'
         
         return result
         
@@ -1027,23 +1029,38 @@ def create_subtask(
             else:
                 parent_task_gid = matching_tasks[0]['gid']
         
-        # Create the subtask
+        # Create the subtask with proper parent relationship
         subtask_data = _build_task_data(
             name=subtask_name, notes=notes, assignee=assignee, due_date=due_date,
             priority=priority, client=client, platform=platform, 
             status=status, effort=effort
         )
         
-        # Add parent relationship
+        # Set parent relationship - this makes it a true subtask
         subtask_data['parent'] = parent_task_gid
         
+        # Create the subtask
         result = tasks_api.create_task(
             body={'data': subtask_data}, 
             opts={'opt_fields': 'gid,name,parent.name,permalink_url'}
         )
         
-        parent_name = result.get('parent', {}).get('name', 'Unknown')
-        return f"✅ Subtask created successfully!\nSubtask: {result['name']}\nParent Task: {parent_name}\nSubtask ID: {result['gid']}\nURL: {result.get('permalink_url', 'N/A')}"
+        # Verify the parent relationship was established
+        try:
+            # Get the created subtask to confirm parent relationship
+            subtask_info = tasks_api.get_task(
+                task_gid=result['gid'],
+                opts={'opt_fields': 'gid,name,parent.name,parent.gid'}
+            )
+            parent_info = subtask_info.get('parent', {})
+            if parent_info:
+                parent_verification = f"\n🔗 **Parent Relationship:** ✅ Confirmed\n   Parent: {parent_info.get('name', 'Unknown')} (GID: {parent_info.get('gid', 'Unknown')})\n"
+            else:
+                parent_verification = "\n⚠️ **Warning:** Parent relationship may not have been established properly.\n"
+        except:
+            parent_verification = "\n⚠️ **Warning:** Could not verify parent relationship.\n"
+        
+        return f"✅ Subtask created successfully!\nSubtask: {result['name']}\nSubtask ID: {result['gid']}\nURL: {result.get('permalink_url', 'N/A')}{parent_verification}"
         
     except Exception as e:
         return f"Error creating subtask: {str(e)}"
@@ -1151,15 +1168,17 @@ def create_multiple_subtasks(
         
         for subtask_name in subtasks:
             try:
+                # Create subtask with parent relationship
                 subtask_data = _build_task_data(
                     name=subtask_name, assignee=assignee, due_date=due_date,
                     priority=priority, client=client, platform=platform
                 )
+                # Set parent to make it a true subtask
                 subtask_data['parent'] = parent_task_gid
                 
                 result = tasks_api.create_task(
                     body={'data': subtask_data}, 
-                    opts={'opt_fields': 'gid,name'}
+                    opts={'opt_fields': 'gid,name,parent.name'}
                 )
                 
                 created_subtasks.append(f"✅ {result['name']} (ID: {result['gid']})")
@@ -1290,6 +1309,672 @@ def list_subtasks(parent_task_name_or_gid: str, project: str = "") -> str:
         
     except Exception as e:
         return f"Error listing subtasks: {str(e)}"
+
+@mcp.tool()
+def add_task_dependency(
+    dependent_task_name_or_gid: str,
+    prerequisite_task_name_or_gid: str,
+    project: str = ""
+) -> str:
+    """
+    Add a dependency between two tasks (prerequisite must be completed before dependent can start).
+    
+    Args:
+        dependent_task_name_or_gid: Task that depends on another (will be blocked)
+        prerequisite_task_name_or_gid: Task that must be completed first (blocks the other)
+        project: Project to search in (required if using task names)
+        
+    Returns:
+        Success message or error message
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Helper function to find task GID
+        def find_task_gid(task_identifier, context_name):
+            if task_identifier.isdigit() and len(task_identifier) > 10:
+                return task_identifier
+            
+            if not project:
+                return None, f"Error: project is required when searching for {context_name} by name."
+            
+            project_gid = asana_projects.get(project, project)
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+            workspace_gid = me['workspaces'][0]['gid']
+            
+            search_params = {
+                'text': task_identifier,
+                'projects.any': project_gid,
+                'completed': False
+            }
+            
+            tasks = tasks_api.search_tasks_for_workspace(
+                workspace_gid=workspace_gid,
+                opts={'opt_fields': 'name,gid'},
+                **search_params
+            )
+            
+            if isinstance(tasks, dict) and 'data' in tasks:
+                tasks = tasks['data']
+            elif not isinstance(tasks, list):
+                tasks = [tasks] if tasks else []
+            
+            matching_tasks = []
+            for task in tasks:
+                if task['name'].lower() == task_identifier.lower():
+                    matching_tasks.append(task)
+                elif task_identifier.lower() in task['name'].lower():
+                    matching_tasks.append(task)
+            
+            if not matching_tasks:
+                return None, f"❌ No {context_name} found matching '{task_identifier}' in project '{project}'"
+            elif len(matching_tasks) > 1:
+                task_list = "\n".join([f"• {task['name']} (GID: {task['gid']})" for task in matching_tasks[:3]])
+                return None, f"❌ Multiple {context_name}s found:\n{task_list}\n\nPlease use a more specific name or GID."
+            else:
+                return matching_tasks[0]['gid'], None
+        
+        # Find both tasks
+        dependent_gid, error = find_task_gid(dependent_task_name_or_gid, "dependent task")
+        if error:
+            return error
+        
+        prerequisite_gid, error = find_task_gid(prerequisite_task_name_or_gid, "prerequisite task")
+        if error:
+            return error
+        
+        # Add the dependency using Asana's dependencies API
+        tasks_api.add_dependencies_for_task(
+            task_gid=dependent_gid,
+            body={'data': {'dependencies': [prerequisite_gid]}}
+        )
+        
+        # Get task names for confirmation
+        dependent_info = tasks_api.get_task(dependent_gid, opts={'opt_fields': 'name'})
+        prerequisite_info = tasks_api.get_task(prerequisite_gid, opts={'opt_fields': 'name'})
+        
+        return f"✅ Dependency added successfully!\n🔗 **'{prerequisite_info['name']}'** must be completed before **'{dependent_info['name']}'** can start.\n\n📋 Dependent Task: {dependent_info['name']} (GID: {dependent_gid})\n📋 Prerequisite Task: {prerequisite_info['name']} (GID: {prerequisite_gid})"
+        
+    except Exception as e:
+        return f"Error adding dependency: {str(e)}"
+
+@mcp.tool()
+def create_subtasks_with_dependencies(
+    parent_task_name_or_gid: str,
+    subtask_list: str,
+    project: str = "",
+    assignee: str = "",
+    priority: str = "",
+    create_sequential_dependencies: bool = False
+) -> str:
+    """
+    Create multiple subtasks with optional sequential dependencies.
+    
+    Args:
+        parent_task_name_or_gid: Name or GID of the parent task
+        subtask_list: Comma-separated or newline-separated list of subtask names
+        project: Project name to search in (required if using parent task name)
+        assignee: Assignee for all subtasks (optional)
+        priority: Priority for all subtasks (optional)
+        create_sequential_dependencies: If True, creates dependencies so subtasks must be completed in order
+        
+    Returns:
+        Summary of created subtasks and dependencies
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # First create all subtasks using existing function
+        creation_result = create_multiple_subtasks(
+            parent_task_name_or_gid=parent_task_name_or_gid,
+            subtask_list=subtask_list,
+            project=project,
+            assignee=assignee,
+            priority=priority
+        )
+        
+        # If creation failed, return the error
+        if "Error" in creation_result or "❌" in creation_result:
+            return creation_result
+        
+        result_msg = creation_result
+        
+        # If sequential dependencies requested, create them
+        if create_sequential_dependencies:
+            # Parse the subtask list to get names in order
+            if '\n' in subtask_list:
+                subtask_names = [task.strip() for task in subtask_list.split('\n') if task.strip()]
+            else:
+                subtask_names = [task.strip() for task in subtask_list.split(',') if task.strip()]
+            
+            if len(subtask_names) > 1:
+                result_msg += "\n\n🔗 **Creating Sequential Dependencies:**\n"
+                
+                dependencies_created = 0
+                dependencies_failed = 0
+                
+                # Create dependencies: subtask[i] depends on subtask[i-1]
+                for i in range(1, len(subtask_names)):
+                    try:
+                        dependency_result = add_task_dependency(
+                            dependent_task_name_or_gid=subtask_names[i],
+                            prerequisite_task_name_or_gid=subtask_names[i-1],
+                            project=project
+                        )
+                        
+                        if "✅" in dependency_result:
+                            result_msg += f"✅ {subtask_names[i]} depends on {subtask_names[i-1]}\n"
+                            dependencies_created += 1
+                        else:
+                            result_msg += f"❌ Failed to create dependency: {subtask_names[i]} → {subtask_names[i-1]}\n"
+                            dependencies_failed += 1
+                            
+                    except Exception as e:
+                        result_msg += f"❌ Failed to create dependency: {subtask_names[i]} → {subtask_names[i-1]}: {str(e)}\n"
+                        dependencies_failed += 1
+                
+                result_msg += f"\n📊 **Dependencies Summary:** {dependencies_created} created, {dependencies_failed} failed"
+        
+        return result_msg
+        
+    except Exception as e:
+        return f"Error creating subtasks with dependencies: {str(e)}"
+
+@mcp.tool()
+def list_task_dependencies(task_name_or_gid: str, project: str = "") -> str:
+    """
+    List dependencies for a task (what it depends on and what depends on it).
+    
+    Args:
+        task_name_or_gid: Name or GID of the task
+        project: Project to search in (required if using task name)
+        
+    Returns:
+        List of task dependencies
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Find the task
+        task_gid = None
+        task_name = ""
+        
+        if task_name_or_gid.isdigit() and len(task_name_or_gid) > 10:
+            task_gid = task_name_or_gid
+            try:
+                task_info = tasks_api.get_task(task_gid, opts={'opt_fields': 'name'})
+                task_name = task_info.get('name', 'Unknown')
+            except:
+                task_name = 'Unknown'
+        else:
+            if not project:
+                return "Error: project is required when searching by task name."
+            
+            project_gid = asana_projects.get(project, project)
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+            workspace_gid = me['workspaces'][0]['gid']
+            
+            search_params = {
+                'text': task_name_or_gid,
+                'projects.any': project_gid,
+                'completed': False
+            }
+            
+            tasks = tasks_api.search_tasks_for_workspace(
+                workspace_gid=workspace_gid,
+                opts={'opt_fields': 'name,gid'},
+                **search_params
+            )
+            
+            if isinstance(tasks, dict) and 'data' in tasks:
+                tasks = tasks['data']
+            elif not isinstance(tasks, list):
+                tasks = [tasks] if tasks else []
+            
+            matching_tasks = []
+            for task in tasks:
+                if task['name'].lower() == task_name_or_gid.lower():
+                    matching_tasks.append(task)
+                elif task_name_or_gid.lower() in task['name'].lower():
+                    matching_tasks.append(task)
+            
+            if not matching_tasks:
+                return f"❌ No task found matching '{task_name_or_gid}' in project '{project}'"
+            elif len(matching_tasks) > 1:
+                task_list = "\n".join([f"• {task['name']} (GID: {task['gid']})" for task in matching_tasks[:5]])
+                return f"❌ Multiple tasks found:\n{task_list}\n\nPlease use a more specific name or the exact GID."
+            else:
+                task_gid = matching_tasks[0]['gid']
+                task_name = matching_tasks[0]['name']
+        
+        # Get task with dependencies
+        task_info = tasks_api.get_task(
+            task_gid=task_gid,
+            opts={'opt_fields': 'name,dependencies.name,dependencies.gid,dependents.name,dependents.gid'}
+        )
+        
+        dependencies = task_info.get('dependencies', [])
+        dependents = task_info.get('dependents', [])
+        
+        result = f"🔗 **Task Dependencies for:** {task_name}\n\n"
+        
+        if dependencies:
+            result += f"📋 **This task depends on ({len(dependencies)}):**\n"
+            for dep in dependencies:
+                dep_name = dep.get('name', 'Unknown')
+                dep_gid = dep.get('gid', '')
+                result += f"  • {dep_name} (GID: {dep_gid})\n"
+            result += "\n"
+        else:
+            result += "📋 **This task has no dependencies** (can start immediately)\n\n"
+        
+        if dependents:
+            result += f"🔒 **Tasks that depend on this ({len(dependents)}):**\n"
+            for dep in dependents:
+                dep_name = dep.get('name', 'Unknown')
+                dep_gid = dep.get('gid', '')
+                result += f"  • {dep_name} (GID: {dep_gid})\n"
+            result += "\n"
+        else:
+            result += "🔒 **No tasks depend on this** (completing it won't unblock anything)\n\n"
+        
+        result += "💡 **Tip:** Use add_task_dependency() to create new dependencies between tasks."
+        
+        return result
+        
+    except Exception as e:
+        return f"Error listing task dependencies: {str(e)}"
+
+@mcp.tool()
+def move_task_to_project(
+    task_name_or_gid: str,
+    from_project: str,
+    to_project: str,
+    keep_in_original: bool = False
+) -> str:
+    """
+    Move a task from one project to another.
+    
+    Args:
+        task_name_or_gid: Name or GID of the task to move
+        from_project: Current project name or GID (required if using task name)
+        to_project: Destination project name or GID
+        keep_in_original: If True, keeps task in original project (adds to both projects)
+        
+    Returns:
+        Success message or error message
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Find the task
+        task_gid = None
+        task_name = ""
+        
+        if task_name_or_gid.isdigit() and len(task_name_or_gid) > 10:
+            task_gid = task_name_or_gid
+            try:
+                task_info = tasks_api.get_task(
+                    task_gid=task_gid,
+                    opts={'opt_fields': 'name,projects'}
+                )
+                task_name = task_info.get('name', 'Unknown')
+            except:
+                task_name = 'Unknown'
+        else:
+            if not from_project:
+                return "Error: from_project is required when searching by task name."
+            
+            from_project_gid = asana_projects.get(from_project, from_project)
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+            workspace_gid = me['workspaces'][0]['gid']
+            
+            search_params = {
+                'text': task_name_or_gid,
+                'projects.any': from_project_gid,
+                'completed': False
+            }
+            
+            tasks = tasks_api.search_tasks_for_workspace(
+                workspace_gid=workspace_gid,
+                opts={'opt_fields': 'name,gid'},
+                **search_params
+            )
+            
+            # Handle response format
+            if isinstance(tasks, dict) and 'data' in tasks:
+                tasks = tasks['data']
+            elif not isinstance(tasks, list):
+                tasks = [tasks] if tasks else []
+            
+            matching_tasks = []
+            for task in tasks:
+                if task['name'].lower() == task_name_or_gid.lower():
+                    matching_tasks.append(task)
+                elif task_name_or_gid.lower() in task['name'].lower():
+                    matching_tasks.append(task)
+            
+            if not matching_tasks:
+                return f"❌ No task found matching '{task_name_or_gid}' in project '{from_project}'"
+            elif len(matching_tasks) > 1:
+                task_list = "\n".join([f"• {task['name']} (GID: {task['gid']})" for task in matching_tasks[:5]])
+                return f"❌ Multiple tasks found:\n{task_list}\n\nPlease use a more specific name or the exact GID."
+            else:
+                task_gid = matching_tasks[0]['gid']
+                task_name = matching_tasks[0]['name']
+        
+        # Get project GIDs
+        from_project_gid = asana_projects.get(from_project, from_project) if from_project else None
+        to_project_gid = asana_projects.get(to_project, to_project)
+        
+        # Add task to new project
+        tasks_api.add_project_for_task(
+            task_gid=task_gid,
+            body={'data': {'project': to_project_gid}}
+        )
+        
+        action_type = "copied to" if keep_in_original else "moved to"
+        
+        # Remove from original project if not keeping
+        if not keep_in_original and from_project_gid:
+            tasks_api.remove_project_for_task(
+                task_gid=task_gid,
+                body={'data': {'project': from_project_gid}}
+            )
+        
+        return f"✅ Task '{task_name}' successfully {action_type} project '{to_project}'!\nTask GID: {task_gid}"
+        
+    except Exception as e:
+        return f"Error moving task: {str(e)}"
+
+@mcp.tool()
+def move_multiple_tasks(
+    task_list: str,
+    from_project: str,
+    to_project: str,
+    keep_in_original: bool = False
+) -> str:
+    """
+    Move multiple tasks from one project to another.
+    
+    Args:
+        task_list: Comma-separated or newline-separated list of task names or GIDs
+        from_project: Current project name or GID
+        to_project: Destination project name or GID
+        keep_in_original: If True, keeps tasks in original project (adds to both projects)
+        
+    Returns:
+        Summary of moved tasks or error message
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Parse the task list
+        if '\n' in task_list:
+            tasks = [task.strip() for task in task_list.split('\n') if task.strip()]
+        else:
+            tasks = [task.strip() for task in task_list.split(',') if task.strip()]
+        
+        if not tasks:
+            return "Error: No tasks provided. Please provide a comma-separated or newline-separated list."
+        
+        # Get project GIDs
+        from_project_gid = asana_projects.get(from_project, from_project)
+        to_project_gid = asana_projects.get(to_project, to_project)
+        
+        moved_tasks = []
+        failed_tasks = []
+        
+        for task_identifier in tasks:
+            try:
+                # Use the single move function for each task
+                result = move_task_to_project(
+                    task_name_or_gid=task_identifier,
+                    from_project=from_project,
+                    to_project=to_project,
+                    keep_in_original=keep_in_original
+                )
+                
+                if result.startswith("✅"):
+                    moved_tasks.append(f"✅ {task_identifier}")
+                else:
+                    failed_tasks.append(f"❌ {task_identifier}: {result}")
+                    
+            except Exception as e:
+                failed_tasks.append(f"❌ {task_identifier}: {str(e)}")
+        
+        # Build result summary
+        action_type = "copied to" if keep_in_original else "moved to"
+        result_msg = f"📋 **Task {action_type.title()} Summary**\n"
+        result_msg += f"**From:** {from_project} → **To:** {to_project}\n\n"
+        
+        if moved_tasks:
+            result_msg += f"**✅ Successfully {action_type.title()} ({len(moved_tasks)}):**\n"
+            result_msg += "\n".join(moved_tasks) + "\n\n"
+        
+        if failed_tasks:
+            result_msg += f"**❌ Failed ({len(failed_tasks)}):**\n"
+            result_msg += "\n".join(failed_tasks) + "\n\n"
+        
+        result_msg += f"**Total:** {len(moved_tasks)} {action_type}, {len(failed_tasks)} failed"
+        
+        return result_msg
+        
+    except Exception as e:
+        return f"Error moving multiple tasks: {str(e)}"
+
+@mcp.tool()
+def add_task_to_additional_projects(
+    task_name_or_gid: str,
+    current_project: str,
+    additional_projects: str
+) -> str:
+    """
+    Add a task to additional projects (multi-project task).
+    
+    Args:
+        task_name_or_gid: Name or GID of the task
+        current_project: Current project name or GID (required if using task name)
+        additional_projects: Comma-separated list of project names or GIDs to add task to
+        
+    Returns:
+        Success message or error message
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Find the task (same logic as move_task_to_project)
+        task_gid = None
+        task_name = ""
+        
+        if task_name_or_gid.isdigit() and len(task_name_or_gid) > 10:
+            task_gid = task_name_or_gid
+            try:
+                task_info = tasks_api.get_task(
+                    task_gid=task_gid,
+                    opts={'opt_fields': 'name'}
+                )
+                task_name = task_info.get('name', 'Unknown')
+            except:
+                task_name = 'Unknown'
+        else:
+            if not current_project:
+                return "Error: current_project is required when searching by task name."
+            
+            current_project_gid = asana_projects.get(current_project, current_project)
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+            workspace_gid = me['workspaces'][0]['gid']
+            
+            search_params = {
+                'text': task_name_or_gid,
+                'projects.any': current_project_gid,
+                'completed': False
+            }
+            
+            tasks = tasks_api.search_tasks_for_workspace(
+                workspace_gid=workspace_gid,
+                opts={'opt_fields': 'name,gid'},
+                **search_params
+            )
+            
+            # Handle response format
+            if isinstance(tasks, dict) and 'data' in tasks:
+                tasks = tasks['data']
+            elif not isinstance(tasks, list):
+                tasks = [tasks] if tasks else []
+            
+            matching_tasks = []
+            for task in tasks:
+                if task['name'].lower() == task_name_or_gid.lower():
+                    matching_tasks.append(task)
+                elif task_name_or_gid.lower() in task['name'].lower():
+                    matching_tasks.append(task)
+            
+            if not matching_tasks:
+                return f"❌ No task found matching '{task_name_or_gid}' in project '{current_project}'"
+            elif len(matching_tasks) > 1:
+                task_list = "\n".join([f"• {task['name']} (GID: {task['gid']})" for task in matching_tasks[:5]])
+                return f"❌ Multiple tasks found:\n{task_list}\n\nPlease use a more specific name or the exact GID."
+            else:
+                task_gid = matching_tasks[0]['gid']
+                task_name = matching_tasks[0]['name']
+        
+        # Parse additional projects
+        project_names = [p.strip() for p in additional_projects.split(',') if p.strip()]
+        
+        if not project_names:
+            return "Error: No additional projects provided."
+        
+        added_projects = []
+        failed_projects = []
+        
+        for project_name in project_names:
+            try:
+                project_gid = asana_projects.get(project_name, project_name)
+                
+                tasks_api.add_project_for_task(
+                    task_gid=task_gid,
+                    body={'data': {'project': project_gid}}
+                )
+                
+                added_projects.append(f"✅ {project_name}")
+                
+            except Exception as e:
+                failed_projects.append(f"❌ {project_name}: {str(e)}")
+        
+        # Build result summary
+        result_msg = f"📋 **Multi-Project Task Summary**\n"
+        result_msg += f"**Task:** {task_name}\n\n"
+        
+        if added_projects:
+            result_msg += f"**✅ Added to Projects ({len(added_projects)}):**\n"
+            result_msg += "\n".join(added_projects) + "\n\n"
+        
+        if failed_projects:
+            result_msg += f"**❌ Failed to Add ({len(failed_projects)}):**\n"
+            result_msg += "\n".join(failed_projects) + "\n\n"
+        
+        result_msg += f"**Total:** Added to {len(added_projects)} projects, {len(failed_projects)} failed"
+        
+        return result_msg
+        
+    except Exception as e:
+        return f"Error adding task to additional projects: {str(e)}"
+
+@mcp.tool()
+def get_task_projects(task_name_or_gid: str, current_project: str = "") -> str:
+    """
+    Show which projects a task is currently in.
+    
+    Args:
+        task_name_or_gid: Name or GID of the task
+        current_project: Project to search in (required if using task name)
+        
+    Returns:
+        List of projects the task is in
+    """
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
+    
+    try:
+        # Find the task
+        task_gid = None
+        task_name = ""
+        
+        if task_name_or_gid.isdigit() and len(task_name_or_gid) > 10:
+            task_gid = task_name_or_gid
+        else:
+            if not current_project:
+                return "Error: current_project is required when searching by task name."
+            
+            current_project_gid = asana_projects.get(current_project, current_project)
+            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
+            workspace_gid = me['workspaces'][0]['gid']
+            
+            search_params = {
+                'text': task_name_or_gid,
+                'projects.any': current_project_gid,
+                'completed': False
+            }
+            
+            tasks = tasks_api.search_tasks_for_workspace(
+                workspace_gid=workspace_gid,
+                opts={'opt_fields': 'name,gid'},
+                **search_params
+            )
+            
+            # Handle response format
+            if isinstance(tasks, dict) and 'data' in tasks:
+                tasks = tasks['data']
+            elif not isinstance(tasks, list):
+                tasks = [tasks] if tasks else []
+            
+            matching_tasks = []
+            for task in tasks:
+                if task['name'].lower() == task_name_or_gid.lower():
+                    matching_tasks.append(task)
+                elif task_name_or_gid.lower() in task['name'].lower():
+                    matching_tasks.append(task)
+            
+            if not matching_tasks:
+                return f"❌ No task found matching '{task_name_or_gid}' in project '{current_project}'"
+            elif len(matching_tasks) > 1:
+                task_list = "\n".join([f"• {task['name']} (GID: {task['gid']})" for task in matching_tasks[:5]])
+                return f"❌ Multiple tasks found:\n{task_list}\n\nPlease use a more specific name or the exact GID."
+            else:
+                task_gid = matching_tasks[0]['gid']
+                task_name = matching_tasks[0]['name']
+        
+        # Get task with projects
+        task_info = tasks_api.get_task(
+            task_gid=task_gid,
+            opts={'opt_fields': 'name,projects.name,projects.gid'}
+        )
+        
+        task_name = task_info.get('name', 'Unknown')
+        projects = task_info.get('projects', [])
+        
+        if not projects:
+            return f"📋 **Task:** {task_name}\n\n❌ Task is not in any projects."
+        
+        result = f"📋 **Task:** {task_name}\n"
+        result += f"📁 **Projects ({len(projects)}):**\n\n"
+        
+        for project in projects:
+            project_name = project.get('name', 'Unknown')
+            project_gid = project.get('gid', '')
+            result += f"• **{project_name}** (GID: {project_gid})\n"
+        
+        return result
+        
+    except Exception as e:
+        return f"Error getting task projects: {str(e)}"
 
 if __name__ == "__main__":
     mcp.run(transport="http", port=8000)
