@@ -1,26 +1,25 @@
-#!/usr/bin/env python3
-"""
-FastMCP Server with Asana Integration
-A comprehensive MCP server using FastMCP that provides utility tools and Asana task management.
-"""
-
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Client
 from typing import Any, Optional, List, Dict
 import datetime
 import json
-import os
 import asana
+import os
 
 # Initialize the FastMCP server
 mcp = FastMCP("AsanaTaskManager")
 
-# Initialize Asana client using environment variable
-asana_client = None
+# Initialize Asana client using access token
+token = os.environ.get("ASANA_ACCESS_TOKEN")
 
-# Load Asana access token from environment variable
-token = os.getenv("ASANA-ACCESS-TOKEN")
-# Initialize Asana client with the token
-asana_client = asana.Client.access_token(token)
+# Configure Asana client with access token
+configuration = asana.Configuration()
+configuration.access_token = token
+api_client = asana.ApiClient(configuration)
+
+# Initialize API clients
+tasks_api = asana.TasksApi(api_client)
+projects_api = asana.ProjectsApi(api_client)
+users_api = asana.UsersApi(api_client)
     
 
 
@@ -49,8 +48,8 @@ def create_asana_task(
     Returns:
         Success message with task details or error message
     """
-    if not asana_client:
-        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
+    if not tasks_api:
+        return "Error: Asana client not initialized. Please check the access token."
     
     try:
         task_data = {
@@ -76,7 +75,7 @@ def create_asana_task(
         if priority and priority.lower() in priority_mapping:
             task_data['priority'] = priority_mapping[priority.lower()]
         
-        result = asana_client.tasks.create_task(task_data)
+        result = tasks_api.create_task(body={'data': task_data})
         
         return f"✅ Task created successfully!\nTask ID: {result['gid']}\nName: {result['name']}\nURL: {result.get('permalink_url', 'N/A')}"
         
@@ -106,8 +105,8 @@ def update_asana_task(
     Returns:
         Success message with updated task details or error message
     """
-    if not asana_client:
-        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
+    if not tasks_api:
+        return "Error: Asana client not initialized. Please check the access token."
     
     try:
         task_data = {}
@@ -135,7 +134,7 @@ def update_asana_task(
         if not task_data:
             return "Error: No fields provided to update. Please specify at least one field to update."
         
-        result = asana_client.tasks.update_task(task_gid, task_data)
+        result = tasks_api.update_task(task_gid, body={'data': task_data})
         
         return f"✅ Task updated successfully!\nTask ID: {result['gid']}\nName: {result['name']}\nCompleted: {result['completed']}"
         
@@ -153,11 +152,11 @@ def get_asana_task(task_gid: str) -> str:
     Returns:
         Task details or error message
     """
-    if not asana_client:
-        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
+    if not tasks_api:
+        return "Error: Asana client not initialized. Please check the access token."
     
     try:
-        result = asana_client.tasks.get_task(
+        result = tasks_api.get_task(
             task_gid,
             opt_fields=['name', 'notes', 'completed', 'due_on', 'created_at', 'modified_at', 'assignee.name', 'projects.name', 'permalink_url']
         )
@@ -188,16 +187,16 @@ def list_asana_projects() -> str:
     Returns:
         List of projects with their GIDs and names or error message
     """
-    if not asana_client:
-        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
+    if not projects_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
     
     try:
         # Get the authenticated user first
-        me = asana_client.users.me()
+        me = users_api.get_user('me')
         
         # Get projects for the user
-        projects = asana_client.projects.get_projects(
-            {'owner': me['gid']},
+        projects = projects_api.get_projects(
+            owner=me['gid'],
             opt_fields=['name', 'gid', 'created_at', 'modified_at']
         )
         
@@ -226,10 +225,14 @@ def search_asana_tasks(query: str, project_gid: str = "", completed: str = "fals
     Returns:
         List of matching tasks or error message
     """
-    if not asana_client:
-        return "Error: Asana client not initialized. Please set the ASANA-ACCESS-TOKEN environment variable."
+    if not tasks_api or not users_api:
+        return "Error: Asana client not initialized. Please check the access token."
     
     try:
+        # Get user's workspace
+        me = users_api.get_user('me')
+        workspace_gid = me['workspaces'][0]['gid']
+        
         search_params = {
             'text': query,
             'completed': completed.lower() == 'true'
@@ -238,9 +241,9 @@ def search_asana_tasks(query: str, project_gid: str = "", completed: str = "fals
         if project_gid:
             search_params['projects.any'] = project_gid
         
-        tasks = asana_client.tasks.search_tasks_for_workspace(
-            asana_client.users.me()['workspaces'][0]['gid'],
-            search_params,
+        tasks = tasks_api.search_tasks_for_workspace(
+            workspace_gid,
+            **search_params,
             opt_fields=['name', 'gid', 'completed', 'due_on', 'assignee.name']
         )
         
