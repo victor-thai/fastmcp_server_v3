@@ -18,14 +18,16 @@ _user_cache = {}
 _cache_timestamp = None
 _cache_duration = 3600  # Cache for 1 hour
 
+# Workspace configuration
+WORKSPACE_GID = "1210163496628143"
+
 # Custom field mappings (you'll need to replace these GIDs with your actual custom field GIDs)
 asana_custom_fields = {
     "Clients": "1200882907169711",      # Clients field
     "Platform": "1206936878420527",     # Platform field (multi-enum)
     "Priority": "1199170187515380",     # Priority field
     "Task Progress": "1200841656461302", # Task Progress field
-    "Status": "1200907941118113",       # Status field
-    "Effort": "1200907941118107",       # Effort field
+    "Status": "1200907941118113"       # Status field
 }
 
 # Custom field options mappings (for enum/dropdown fields)
@@ -88,11 +90,6 @@ asana_field_options = {
         "Complete": "1200907941118114",
         "Blocked": "1200907941118115",
         "In Progress": "1200907941118116"
-    },
-    "Effort": {
-        "Small": "1200907941118108",
-        "Medium": "1200907941118109",
-        "Large": "1200907941118110"
     }
 }
 
@@ -160,13 +157,8 @@ def _fetch_workspace_users():
         return {}
     
     try:
-        # Get workspace with better error handling
-        me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-        if not me.get('workspaces'):
-            print("Error: No workspaces found for current user")
-            return {}
-        
-        workspace_gid = me['workspaces'][0]['gid']
+        # Use configured workspace GID
+        workspace_gid = WORKSPACE_GID
         print(f"Debug: Using workspace GID: {workspace_gid}")
         
         # Fetch users with better error handling
@@ -483,20 +475,12 @@ def update_asana_task(
             project_gid = asana_projects.get(project, project)
             
             # Get user's workspace to search in
-            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-            workspace_gid = me['workspaces'][0]['gid']
+            workspace_gid = WORKSPACE_GID
             
-            # Search for tasks with this name in the specified project
-            search_params = {
-                'text': task_name_or_gid,
-                'projects.any': project_gid,
-                'completed': False  # Search incomplete tasks by default
-            }
-            
-            tasks = tasks_api.search_tasks_for_workspace(
-                workspace_gid=workspace_gid,
-                opts={'opt_fields': 'name,gid,completed'},
-                **search_params
+            # Get all tasks from the project and filter by name
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=project_gid,
+                opts={'opt_fields': 'name,gid,completed'}
             )
             
             # Find exact match or best match
@@ -716,8 +700,7 @@ def find_team_member_gid(full_name: str) -> str:
             result = f"❌ **No matches found for '{full_name}'**\n\n📋 **Available team members:**\n"
             
             # Get actual user details for display
-            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-            workspace_gid = me['workspaces'][0]['gid']
+            workspace_gid = WORKSPACE_GID
             users_response = users_api.get_users_for_workspace(
                 workspace_gid=workspace_gid,
                 opts={'opt_fields': 'gid,name,email'}
@@ -783,8 +766,7 @@ def test_assignee_resolution(test_name: str) -> str:
         result += "\n💡 **Available team members for reference:**\n"
         
         # Show first few team members as examples
-        me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-        workspace_gid = me['workspaces'][0]['gid']
+        workspace_gid = WORKSPACE_GID
         users = users_api.get_users_for_workspace(
             workspace_gid=workspace_gid,
             opts={'opt_fields': 'gid,name,email'}
@@ -827,8 +809,7 @@ def get_team_members() -> str:
             return "❌ No team members found or unable to fetch from workspace. Please check your Asana access token and permissions."
         
         # Get actual user details
-        me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-        workspace_gid = me['workspaces'][0]['gid']
+        workspace_gid = WORKSPACE_GID
         users_response = users_api.get_users_for_workspace(
             workspace_gid=workspace_gid,
             opts={'opt_fields': 'gid,name,email'}
@@ -910,24 +891,28 @@ def search_asana_tasks(query: str, project: str = "", completed: str = "false") 
     
     try:
         # Get user's workspace
-        me = users_api.get_user('me')
-        workspace_gid = me['workspaces'][0]['gid']
+        workspace_gid = WORKSPACE_GID
         
-        search_params = {
-            'text': query,
-            'completed': completed.lower() == 'true'
-        }
-        
+        # Get tasks from project if specified, otherwise search workspace
         if project:
             # Check if project is a name in our mapping, otherwise use as GID
             project_gid = asana_projects.get(project, project)
-            search_params['projects.any'] = project_gid
-        
-        tasks = tasks_api.search_tasks_for_workspace(
-            workspace_gid=workspace_gid,
-            opts={'opt_fields': 'name,gid,completed,due_on,assignee.name'},
-            **search_params
-        )
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=project_gid,
+                opts={'opt_fields': 'name,gid,completed,due_on,assignee.name'}
+            )
+            # Filter by query text and completion status
+            filtered_tasks = []
+            for task in tasks:
+                name_matches = query.lower() in task.get('name', '').lower()
+                status_matches = task.get('completed', False) == (completed.lower() == 'true')
+                if name_matches and (completed.lower() == 'true' or not task.get('completed', False)):
+                    filtered_tasks.append(task)
+            tasks = filtered_tasks
+        else:
+            # For workspace-wide search, we'll need to iterate through projects
+            # This is a limitation - for now, require a project
+            return "Error: Please specify a project to search within."
         
         if not tasks:
             return f"No tasks found matching '{query}'."
@@ -993,19 +978,11 @@ def create_subtask(
                 return "Error: Project name or GID is required when searching by task name."
             
             project_gid = asana_projects.get(project, project)
-            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-            workspace_gid = me['workspaces'][0]['gid']
+            workspace_gid = WORKSPACE_GID
             
-            search_params = {
-                'text': parent_task_name_or_gid,
-                'projects.any': project_gid,
-                'completed': False
-            }
-            
-            tasks = tasks_api.search_tasks_for_workspace(
-                workspace_gid=workspace_gid,
-                opts={'opt_fields': 'name,gid'},
-                **search_params
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=project_gid,
+                opts={'opt_fields': 'name,gid'}
             )
             
             # Handle response format
@@ -1125,19 +1102,11 @@ def create_multiple_subtasks(
                 return "Error: Project name or GID is required when searching by task name."
             
             project_gid = asana_projects.get(project, project)
-            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-            workspace_gid = me['workspaces'][0]['gid']
+            workspace_gid = WORKSPACE_GID
             
-            search_params = {
-                'text': parent_task_name_or_gid,
-                'projects.any': project_gid,
-                'completed': False
-            }
-            
-            tasks = tasks_api.search_tasks_for_workspace(
-                workspace_gid=workspace_gid,
-                opts={'opt_fields': 'name,gid'},
-                **search_params
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=project_gid,
+                opts={'opt_fields': 'name,gid'}
             )
             
             # Handle response format
@@ -1243,16 +1212,9 @@ def list_subtasks(parent_task_name_or_gid: str, project: str = "") -> str:
             me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
             workspace_gid = me['workspaces'][0]['gid']
             
-            search_params = {
-                'text': parent_task_name_or_gid,
-                'projects.any': project_gid,
-                'completed': False
-            }
-            
-            tasks = tasks_api.search_tasks_for_workspace(
-                workspace_gid=workspace_gid,
-                opts={'opt_fields': 'name,gid'},
-                **search_params
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=project_gid,
+                opts={'opt_fields': 'name,gid'}
             )
             
             # Handle response format
@@ -1340,19 +1302,11 @@ def add_task_dependency(
                 return None, f"Error: project is required when searching for {context_name} by name."
             
             project_gid = asana_projects.get(project, project)
-            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-            workspace_gid = me['workspaces'][0]['gid']
+            workspace_gid = WORKSPACE_GID
             
-            search_params = {
-                'text': task_identifier,
-                'projects.any': project_gid,
-                'completed': False
-            }
-            
-            tasks = tasks_api.search_tasks_for_workspace(
-                workspace_gid=workspace_gid,
-                opts={'opt_fields': 'name,gid'},
-                **search_params
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=project_gid,
+                opts={'opt_fields': 'name,gid'}
             )
             
             if isinstance(tasks, dict) and 'data' in tasks:
@@ -1514,19 +1468,11 @@ def list_task_dependencies(task_name_or_gid: str, project: str = "") -> str:
                 return "Error: project is required when searching by task name."
             
             project_gid = asana_projects.get(project, project)
-            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-            workspace_gid = me['workspaces'][0]['gid']
+            workspace_gid = WORKSPACE_GID
             
-            search_params = {
-                'text': task_name_or_gid,
-                'projects.any': project_gid,
-                'completed': False
-            }
-            
-            tasks = tasks_api.search_tasks_for_workspace(
-                workspace_gid=workspace_gid,
-                opts={'opt_fields': 'name,gid'},
-                **search_params
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=project_gid,
+                opts={'opt_fields': 'name,gid'}
             )
             
             if isinstance(tasks, dict) and 'data' in tasks:
@@ -1630,19 +1576,11 @@ def move_task_to_project(
                 return "Error: from_project is required when searching by task name."
             
             from_project_gid = asana_projects.get(from_project, from_project)
-            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-            workspace_gid = me['workspaces'][0]['gid']
+            workspace_gid = WORKSPACE_GID
             
-            search_params = {
-                'text': task_name_or_gid,
-                'projects.any': from_project_gid,
-                'completed': False
-            }
-            
-            tasks = tasks_api.search_tasks_for_workspace(
-                workspace_gid=workspace_gid,
-                opts={'opt_fields': 'name,gid'},
-                **search_params
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=from_project_gid,
+                opts={'opt_fields': 'name,gid'}
             )
             
             # Handle response format
@@ -1808,19 +1746,11 @@ def add_task_to_additional_projects(
                 return "Error: current_project is required when searching by task name."
             
             current_project_gid = asana_projects.get(current_project, current_project)
-            me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
-            workspace_gid = me['workspaces'][0]['gid']
+            workspace_gid = WORKSPACE_GID
             
-            search_params = {
-                'text': task_name_or_gid,
-                'projects.any': current_project_gid,
-                'completed': False
-            }
-            
-            tasks = tasks_api.search_tasks_for_workspace(
-                workspace_gid=workspace_gid,
-                opts={'opt_fields': 'name,gid'},
-                **search_params
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=current_project_gid,
+                opts={'opt_fields': 'name,gid'}
             )
             
             # Handle response format
@@ -1917,16 +1847,9 @@ def get_task_projects(task_name_or_gid: str, current_project: str = "") -> str:
             me = users_api.get_user(user_gid='me', opts={'opt_fields': 'gid,workspaces'})
             workspace_gid = me['workspaces'][0]['gid']
             
-            search_params = {
-                'text': task_name_or_gid,
-                'projects.any': current_project_gid,
-                'completed': False
-            }
-            
-            tasks = tasks_api.search_tasks_for_workspace(
-                workspace_gid=workspace_gid,
-                opts={'opt_fields': 'name,gid'},
-                **search_params
+            tasks = tasks_api.get_tasks_for_project(
+                project_gid=current_project_gid,
+                opts={'opt_fields': 'name,gid'}
             )
             
             # Handle response format
